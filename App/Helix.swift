@@ -450,11 +450,11 @@ extension SongLibrary {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tone = (root["data"] as? [String: Any])?["tone"] as? [String: Any],
               let slots = (tone["automation"] as? [String: Any])?["@assignments"] as? [Any] else { return [] }
-        let dsp = tone["dsp0"] as? [String: Any] ?? [:]
         return (16..<22).map { slot in
             guard slot < slots.count, let a = slots[slot] as? [String: Any], let param = a["@param"] as? String else { return "" }
-            let block = param.split(separator: ".").dropFirst().first.map(String.init) ?? ""    // dsp0.block3.@enabled
-            guard let model = (dsp[block] as? [String: Any])?["@model"] as? String else { return "" }
+            let parts = param.split(separator: ".").map(String.init)        // dsp1.block3.@enabled
+            guard parts.count >= 2, let dsp = tone[parts[0]] as? [String: Any],
+                  let model = (dsp[parts[1]] as? [String: Any])?["@model"] as? String else { return "" }
             return HelixCatalog.displayName(model)
         }
     }
@@ -557,6 +557,9 @@ struct HelixSong {
 }
 
 enum HelixDesigner {
+    /// A change to an existing preset: the current design, what's been asked so far, and the new request.
+    struct Revision { var current: HelixDesign; var history: [String]; var change: String }
+
     static let system = """
     You design guitar presets for Line 6 Helix Native for a worship guitarist. You get a description of the \
     tones wanted, optionally the songs in a set list (with key, BPM and notes), and a catalog of the models \
@@ -578,8 +581,7 @@ enum HelixDesigner {
     beside the dry signal) give consecutive blocks lane "A" or "B": the signal splits before the first of them and \
     merges after the last, and series blocks after them come after the merge. Use at most one split. Set `paths` \
     (merge levels in dB, usually 0; pans 0 = left, 0.5 = centre, 1 = right; invertB false) when there is a "B" \
-    block, otherwise null. The chain has 8 positions: blocks before the split + the longer of A and B + blocks after \
-    the merge must be at most 8.
+    block, otherwise null. How many positions the chain has is in the request (a split counts its longer path).
     - `stereo`: for a model marked "mono or stereo", true or false to choose, null for its usual. Amps and cabs are \
     mono. Stereo effects after the merge keep a panned A/B spread; a mono block there collapses it to the centre.
     An amp or preamp marked "needs a cab after it" must be followed by a cab block. An "amp with its own cab" comes with \
@@ -606,7 +608,7 @@ enum HelixDesigner {
     - Set each snapshot's tempo to its song's BPM when known.
     - With a set list: map every song (by index) to a snapshot; songs with the same feel can share one. Without songs, `songs` is empty.
     - Preset name at most 16 characters. `summary`: two or three sentences on the sound and how the snapshots differ.
-    - Keep levels sensible: drives and boosts shouldn't add more than ~+6 dB; channel volumes near the examples.
+    - Keep levels sensible: drives and boosts shouldn't add more than ~+6 dB. The request says who sets amp channel volumes.
     """
 
     static let schema: [String: Any] = [
@@ -705,7 +707,7 @@ enum HelixDesigner {
     static func design(description: String, songs: [HelixSong], catalog: HelixCatalog,
                        volumePedal: Bool = false, knobs: Int = 3, switches: Int = 4, research: String? = nil,
                        model: String = Claude.model, effort: String = "high",
-                       guitarBlock: Bool = false, guitars: [String] = []) async throws -> HelixDesign {
+                       guitarBlock: Bool = false, guitars: [String] = [], revision: Revision? = nil) async throws -> HelixDesign {
         var msg = "<catalog>\n\(catalog.promptText)\n</catalog>\n\n<request>\n\(description)\n</request>\n"
         if let research, !research.isEmpty {
             msg += "\n<tone_research>\n\(research)\n</tone_research>\n"
@@ -724,9 +726,21 @@ enum HelixDesigner {
         if guitarBlock { added.append("a guitar EQ (first, on Knobs 14–16)") }
         if volumePedal { added.append("the player's volume pedal (on Knob 1)") }
         if !added.isEmpty {
-            msg += " StageCharts adds " + added.joined(separator: " and ") + " before your blocks, so you have "
-                + "\(8 - added.count) positions."
+            msg += " StageCharts adds " + added.joined(separator: " and ") + " before your blocks."
         }
+        if HelixBuilder.twoDSP {
+            msg += " Positions: Helix has two DSPs. StageCharts puts your blocks before the first amp or preamp on the "
+                + "first DSP (\(8 - added.count) positions there) and the amp and everything after it on the second (8 "
+                + "positions). An amp inside a split path takes the whole split to the second DSP. With no amp, everything "
+                + "is on the first DSP. Use the room for a fuller pedalboard or a second amp when the tones call for it, not "
+                + "to fill positions."
+        } else {
+            msg += " Positions: \(8 - added.count) in total."
+        }
+        msg += HelixBuilder.evenLevels
+            ? " Levels: StageCharts evens out amp channel volumes (ChVol / Ch Vol) and cab levels afterwards, so leave "
+                + "those at the examples; make level changes between snapshots with a volume or gain block, not the amp's channel volume."
+            : " Levels: keep amp channel volumes near the examples."
         msg += "\n"
         if !guitars.isEmpty {
             msg += "\n<guitars>\n" + guitars.map { "- \($0)" }.joined(separator: "\n") + "\n</guitars>\n"
@@ -743,6 +757,20 @@ enum HelixDesigner {
                 msg += parts.joined(separator: " · ") + "\n"
             }
             msg += "</songs>\n"
+        }
+        if let revision {
+            let enc = JSONEncoder(); enc.outputFormatting = [.sortedKeys]
+            let current = String(decoding: try enc.encode(revision.current), as: UTF8.self)
+            msg += "\n<current_preset>\n\(current)\n</current_preset>\n"
+            msg += "\n<history>\n" + revision.history.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+                + "\n</history>\n"
+            msg += "\n<change>\n\(revision.change)\n</change>\n"
+            msg += "\nThis is a revision. The player has been refining the current preset over time (the history lists "
+                + "each step in order), and now wants the change above. Make that change and return the whole preset. "
+                + "Keep everything the change doesn't touch exactly as it is: the same blocks in the same order and lanes, "
+                + "their settings, the snapshots (names, on/off, settings), the song-to-snapshot mapping and the live "
+                + "controls. Block indices in snapshots and controls refer to the blocks you return. Keep the name unless "
+                + "the change asks for a new one. Write `summary` as a sentence or two on what changed and why.\n"
         }
         let text = try await Claude.ask(system: system, content: [["type": "text", "text": msg]],
                                         effort: effort, schema: schema, maxTokens: maxTokens(effort, base: 16000), model: model)
@@ -782,6 +810,42 @@ enum HelixBuilder {
     /// Knob 2 always rides a drive pedal's gain (Settings → Helix → Live controls).
     static var driveKnob: Bool { UserDefaults.standard.object(forKey: "helixDriveKnob") as? Bool ?? true }
 
+    /// Settings → Helix → Levels: bring amp channel volumes and cab levels up to where hand-built presets sit.
+    static var evenLevels: Bool { UserDefaults.standard.object(forKey: "helixEvenLevels") as? Bool ?? true }
+    /// The preset's output level in dB (the main output block's gain), to match hand-built presets.
+    static var outputLevel: Double { UserDefaults.standard.double(forKey: "helixOutputLevel") }
+    /// Pedals on DSP 1, the amp and everything after it on DSP 2 (like a hand-built two-DSP preset).
+    static var twoDSP: Bool { UserDefaults.standard.object(forKey: "helixTwoDSP") as? Bool ?? true }
+    /// The loudest snapshot's amp channel volume after evening out (hand-built presets sit around 0.9).
+    static let levelTarget = 0.85
+    static let channelVolumeParams = ["ChVol", "Ch Vol"]
+    /// Cabs left at 0 dB go to this (hand-built presets use about +3 dB).
+    static let cabLevel = 2.5
+    static func raiseCabLevel(_ cab: inout JSON) {
+        if let l = cab["Level"].flatMap(HelixCatalog.number), l == 0 { cab["Level"] = cabLevel }
+    }
+    static func isAmp(_ id: String) -> Bool { id.hasPrefix("HD2_Amp") || id.hasPrefix("HD2_Preamp") }
+
+    /// One DSP's chain: series blocks, the two split paths, series blocks after the merge.
+    struct Layout {
+        typealias Kept = (index: Int, model: HelixCatalog.Model, block: HelixDesign.Block)
+        var pre: [Kept] = [], laneA: [Kept] = [], laneB: [Kept] = [], post: [Kept] = []
+        var width: Int { pre.count + max(laneA.count, laneB.count) + post.count }
+        var isEmpty: Bool { width == 0 }
+        /// Where the merge sits (the end of the chain when there's no path B).
+        var joinAt: Int { laneB.isEmpty ? 8 : pre.count + max(laneA.count, laneB.count) }
+        /// Drops the last block that fits least; returns its model id.
+        mutating func dropLast() -> String {
+            let dropped: Kept
+            if !post.isEmpty { dropped = post.removeLast() }
+            else if laneA.count >= laneB.count, !laneA.isEmpty { dropped = laneA.removeLast() }
+            else if !laneB.isEmpty { dropped = laneB.removeLast() }
+            else { dropped = pre.removeLast() }
+            if laneB.isEmpty { pre += laneA + post; laneA = []; post = [] }
+            return dropped.model.id
+        }
+    }
+
     static func build(_ design: HelixDesign, catalog: HelixCatalog, songCount: Int, volumePedal: Bool = false,
                       knobs: Int = 3, switches: Int = 4, guitarBlock: Bool = false) throws -> Result {
         var warnings: [String] = []
@@ -807,7 +871,7 @@ enum HelixBuilder {
         var preset = catalog.skeleton
         var data = preset["data"] as? JSON ?? [:]
         var tone = data["tone"] as? JSON ?? [:]
-        var dsp0 = tone["dsp0"] as? JSON ?? [:]
+        var dsps: [JSON] = [tone["dsp0"] as? JSON ?? [:], tone["dsp1"] as? JSON ?? [:]]
 
         // Blocks Claude picked that this Helix actually has.
         var kept: [(index: Int, model: HelixCatalog.Model, block: HelixDesign.Block)] = []
@@ -829,30 +893,53 @@ enum HelixBuilder {
             default: if let f = firstParallel, i > f { post.append(k) } else { pre.append(k) }
             }
         }
-        while pre.count + max(laneA.count, laneB.count) + post.count > 8 {
-            let dropped: Kept
-            if !post.isEmpty { dropped = post.removeLast() }
-            else if laneA.count >= laneB.count, !laneA.isEmpty { dropped = laneA.removeLast() }
-            else if !laneB.isEmpty { dropped = laneB.removeLast() }
-            else { dropped = pre.removeLast() }
-            warnings.append("Left out \(HelixCatalog.displayName(dropped.model.id)): the chain only has 8 positions.")
-        }
         if laneB.isEmpty { pre += laneA + post; laneA = []; post = [] }       // no path B: one straight chain
-        let width = max(laneA.count, laneB.count)
-        let splitAt = laneB.isEmpty ? 0 : pre.count
-        let joinAt = laneB.isEmpty ? 8 : pre.count + width
-        var place: [(path: Int, position: Int)] = pre.indices.map { (0, $0) }
-        place += laneA.indices.map { (0, pre.count + $0) } + laneB.indices.map { (1, pre.count + $0) }
-        place += post.indices.map { (0, joinAt + $0) }
-        kept = pre + laneA + laneB + post
+
+        // With both DSPs: the pedals before the first amp on DSP 1, the amp and everything after it on DSP 2 (an amp
+        // inside a split path takes the whole split along). Each DSP has 8 positions.
+        var dsp = [Self.Layout(pre: pre, laneA: laneA, laneB: laneB, post: post), Self.Layout()]
+        if twoDSP {
+            if let i = pre.firstIndex(where: { isAmp($0.model.id) }), i > 0 {
+                dsp = [.init(pre: Array(pre[..<i])), .init(pre: Array(pre[i...]), laneA: laneA, laneB: laneB, post: post)]
+            } else if !pre.isEmpty, (laneA + laneB).contains(where: { isAmp($0.model.id) }) {
+                dsp = [.init(pre: pre), .init(laneA: laneA, laneB: laneB, post: post)]
+            } else if !pre.contains(where: { isAmp($0.model.id) }), !(laneA + laneB).contains(where: { isAmp($0.model.id) }),
+                      let j = post.firstIndex(where: { isAmp($0.model.id) }) {
+                dsp = [.init(pre: pre, laneA: laneA, laneB: laneB, post: Array(post[..<j])), .init(pre: Array(post[j...]))]
+            }
+        }
+        for d in 0..<2 {
+            while dsp[d].width > 8 {
+                let name = dsp[d].dropLast()
+                warnings.append("Left out \(HelixCatalog.displayName(name)): "
+                    + (dsp[1].isEmpty ? "the chain only has 8 positions." : "DSP \(d + 1) only has 8 positions."))
+            }
+        }
+        let chained = !dsp[1].isEmpty
+        var place: [(dsp: Int, path: Int, position: Int, local: Int)] = []
+        kept = []
+        for d in 0..<2 {
+            let l = dsp[d]
+            var local = 0
+            for (n, k) in l.pre.enumerated() { kept.append(k); place.append((d, 0, n, local)); local += 1 }
+            for (n, k) in l.laneA.enumerated() { kept.append(k); place.append((d, 0, l.pre.count + n, local)); local += 1 }
+            for (n, k) in l.laneB.enumerated() { kept.append(k); place.append((d, 1, l.pre.count + n, local)); local += 1 }
+            for (n, k) in l.post.enumerated() { kept.append(k); place.append((d, 0, l.joinAt + n, local)); local += 1 }
+        }
         let newIndex = Dictionary(uniqueKeysWithValues: kept.enumerated().map { ($1.index, $0) })
+        /// Where block `bi` lives: "dsp1", "block2" → automation refers to it as "dsp1.block2".
+        func dspKey(_ bi: Int) -> String { "dsp\(place[bi].dsp)" }
+        func blockKey(_ bi: Int) -> String { "block\(place[bi].local)" }
+        func ref(_ bi: Int) -> String { "\(dspKey(bi)).\(blockKey(bi))" }
+        func blockJSON(_ bi: Int) -> JSON? { dsps[place[bi].dsp][blockKey(bi)] as? JSON }
+        func isStereo(_ bi: Int) -> Bool { blockJSON(bi)?["@stereo"] as? Bool ?? false }
 
         let snaps = Array(design.snapshots.prefix(8))
         guard !snaps.isEmpty else { throw HelixError.bad("Claude didn't make any snapshots. Try again.") }
 
         // Values per (block, param) across snapshots, to find which ones snapshots control.
         var perSnapshot: [Int: [String: [Int: Any]]] = [:]       // block → param → snapshot → value
-        var cabCount = 0
+        var cabCount = [0, 0]
         for (bi, k) in kept.enumerated() {
             var block = k.model.example
             block["@position"] = place[bi].position
@@ -871,50 +958,71 @@ enum HelixBuilder {
                 }
                 block[s.param] = v
             }
+            if evenLevels, k.model.type == 2 { Self.raiseCabLevel(&block) }
             if let ref = block["@cab"] as? String, var cab = k.model.linked[ref] {
                 if let other = k.block.cab, other != cab["@model"] as? String {
                     if let c = catalog.linkedCab(other) { cab = c; cab["@enabled"] = true }
                     else { warnings.append("\(HelixCatalog.displayName(k.model.id)): kept its own cab (\(other) isn't a cab in your Helix).") }
                 }
-                let name = "cab\(cabCount)"; cabCount += 1
+                if evenLevels { Self.raiseCabLevel(&cab) }
+                let d = place[bi].dsp
+                let name = "cab\(cabCount[d])"; cabCount[d] += 1
                 block["@cab"] = name
-                dsp0[name] = cab
+                dsps[d][name] = cab
             } else if let other = k.block.cab, !other.isEmpty {
                 warnings.append("\(HelixCatalog.displayName(k.model.id)) has no cab of its own, so \(HelixCatalog.displayName(other)) wasn't used.")
             }
-            dsp0["block\(bi)"] = block
+            dsps[place[bi].dsp][blockKey(bi)] = block
         }
         for (si, s) in snaps.enumerated() {
             for st in s.settings {
                 guard let bi = newIndex[st.block] else { continue }
-                let stereo = (dsp0["block\(bi)"] as? JSON)?["@stereo"] as? Bool ?? false
-                guard let v = value(st.value, param: st.param, model: kept[bi].model, stereo: stereo, catalog: catalog,
+                guard let v = value(st.value, param: st.param, model: kept[bi].model, stereo: isStereo(bi), catalog: catalog,
                                     warnings: &warnings, snapshot: clean(s.name, max: 10)) else { continue }
                 perSnapshot[bi, default: [:]][st.param, default: [:]][si] = v
             }
         }
 
+        // Even out levels: each amp's loudest channel volume (block or any snapshot) is brought up to the target,
+        // scaling the others with it so quieter snapshots stay quieter. Master is left alone (it changes the tone).
+        if evenLevels {
+            for (bi, k) in kept.enumerated() where isAmp(k.model.id) {
+                guard var block = blockJSON(bi) else { continue }
+                for p in Self.channelVolumeParams where k.model.example[p] != nil {
+                    var bySnap = perSnapshot[bi]?[p] ?? [:]
+                    let base = block[p].flatMap(HelixCatalog.number) ?? 0
+                    let peak = ([base] + bySnap.values.compactMap(HelixCatalog.number)).max() ?? 0
+                    guard peak > 0, peak < Self.levelTarget else { continue }
+                    let f = Self.levelTarget / peak, l = catalog.limits[k.model.id]?[p]
+                    func scaled(_ x: Double) -> Double { l?.clamp(x * f, stereo: false) ?? Swift.min(x * f, 1) }
+                    block[p] = scaled(base)
+                    for (si, v) in bySnap { if let x = HelixCatalog.number(v) { bySnap[si] = scaled(x) } }
+                    if !bySnap.isEmpty { perSnapshot[bi]?[p] = bySnap }
+                }
+                dsps[place[bi].dsp][blockKey(bi)] = block
+            }
+        }
+
         // Snapshot-controlled values (controller 19): any setting a snapshot changes.
-        var controller: JSON = [:]
+        var controller: [JSON] = [[:], [:]]          // per DSP: block → param → assignment
         var controlled: [Int: [String: [Any]]] = [:]          // block → param → value per snapshot
         for (bi, params) in perSnapshot {
             var bc: JSON = [:]
             for (p, bySnap) in params {
-                let base = (dsp0["block\(bi)"] as? JSON)?[p] ?? 0
+                let base = blockJSON(bi)?[p] ?? 0
                 let values = snaps.indices.map { bySnap[$0] ?? base }
                 controlled[bi, default: [:]][p] = values
-                if var block = dsp0["block\(bi)"] as? JSON {      // the block itself shows snapshot 1's value
-                    block[p] = values[0]; dsp0["block\(bi)"] = block
+                if var block = blockJSON(bi) {      // the block itself shows snapshot 1's value
+                    block[p] = values[0]; dsps[place[bi].dsp][blockKey(bi)] = block
                 }
                 let nums = values.compactMap { HelixCatalog.number($0) }
                 var entry: JSON = ["@controller": 19, "@snapshot_disable": false]
                 if HelixCatalog.isBool(base) {
                     entry["@min"] = false; entry["@max"] = true
                 } else {
-                    let stereo = (dsp0["block\(bi)"] as? JSON)?["@stereo"] as? Bool ?? false
                     if let l = catalog.limits[kept[bi].model.id]?[p] {      // Helix Native's own range
                         entry["@min"] = l.lo
-                        entry["@max"] = stereo ? (l.hiStereo ?? l.hi) : l.hi
+                        entry["@max"] = isStereo(bi) ? (l.hiStereo ?? l.hi) : l.hi
                     } else {
                         let r = kept[bi].model.ranges[p] ?? (nums.min() ?? 0, nums.max() ?? 1)
                         let lo = min(r.0, nums.min() ?? r.0), hi = max(r.1, nums.max() ?? r.1)
@@ -925,12 +1033,13 @@ enum HelixBuilder {
                 }
                 bc[p] = entry
             }
-            if !bc.isEmpty { controller["block\(bi)"] = bc }
+            if !bc.isEmpty { controller[place[bi].dsp][blockKey(bi)] = bc }
         }
+        func controls(_ bi: Int) -> JSON? { controller[place[bi].dsp][blockKey(bi)] as? JSON }
         // Expression pedals (wahs, volume): the player's own assignments. A snapshot-controlled setting can't also follow a pedal.
         for (bi, k) in kept.enumerated() {
             for (p, entry) in catalog.pedalAssignments(for: k.model.id) {
-                var bc = controller["block\(bi)"] as? JSON ?? [:]
+                var bc = controls(bi) ?? [:]
                 if bc[p] != nil {
                     warnings.append("\(HelixCatalog.displayName(k.model.id)) \(p) changes with snapshots, so it isn't on your expression pedal.")
                     continue
@@ -938,7 +1047,7 @@ enum HelixBuilder {
                 var e = entry
                 e["@snapshot_disable"] = false
                 bc[p] = e
-                controller["block\(bi)"] = bc
+                controller[place[bi].dsp][blockKey(bi)] = bc
             }
         }
         // Live controls: Helix Native's automation Knobs (slots 0–15) and Switches (16–31), driven by the player's MIDI
@@ -948,21 +1057,21 @@ enum HelixBuilder {
         func label(_ bi: Int) -> String { HelixCatalog.displayName(kept[bi].model.id) }
         if let gi = guitarIndex, let bi = newIndex[gi] {
             for g in guitarKnobs {
-                slots[g.knob - 1] = ["@param": "dsp0.block\(bi).\(g.param)", "@min": -guitarRange, "@max": guitarRange]
+                slots[g.knob - 1] = ["@param": "\(ref(bi)).\(g.param)", "@min": -guitarRange, "@max": guitarRange]
                 controlNames.append("Knob \(g.knob): guitar \(g.name) (set by StageCharts for your guitar)")
             }
         }
         let aiKnobs = lastAIKnob(knobs, guitarBlock: guitarIndex != nil)
         if let vi = volumeIndex, knobs >= 1, let bi = newIndex[vi], kept[bi].model.id.hasPrefix("HD2_VolPanVol"),
            kept[bi].model.example["Pedal"] != nil {
-            slots[0] = ["@param": "dsp0.block\(bi).Pedal", "@min": 0.0, "@max": 1.0]
+            slots[0] = ["@param": "\(ref(bi)).Pedal", "@min": 0.0, "@max": 1.0]
             controlNames.append("Knob 1: \(label(bi)) (your volume pedal)")
         }
         for c in design.controls ?? [] {
             guard let bi = newIndex[c.block] else { continue }
             if c.kind == "switch" {
                 guard switches >= 1, (1...switches).contains(c.number), slots[15 + c.number] == nil else { continue }
-                slots[15 + c.number] = ["@param": "dsp0.block\(bi).@enabled", "@min": false, "@max": true]
+                slots[15 + c.number] = ["@param": "\(ref(bi)).@enabled", "@min": false, "@max": true]
                 controlNames.append("Switch \(c.number): \(label(bi)) on/off")
             } else {
                 if c.number == 2, driveKnob, !kept[bi].model.id.contains("Dist") {
@@ -971,16 +1080,15 @@ enum HelixBuilder {
                 }
                 guard aiKnobs >= 1, (1...aiKnobs).contains(c.number), slots[c.number - 1] == nil,
                       let ex = kept[bi].model.example[c.param], !c.param.hasPrefix("@"), !HelixCatalog.isBool(ex) else { continue }
-                if (controller["block\(bi)"] as? JSON)?[c.param] != nil {
+                if controls(bi)?[c.param] != nil {
                     warnings.append("Knob \(c.number) left unassigned: \(label(bi)) \(c.param) changes with snapshots.")
                     continue
                 }
-                let stereo = (dsp0["block\(bi)"] as? JSON)?["@stereo"] as? Bool ?? false
                 let l = catalog.limits[kept[bi].model.id]?[c.param]
                 var lo = Swift.min(c.min, c.max), hi = Swift.max(c.min, c.max)
-                if let l { lo = l.clamp(lo, stereo: stereo); hi = l.clamp(hi, stereo: stereo) }
+                if let l { lo = l.clamp(lo, stereo: isStereo(bi)); hi = l.clamp(hi, stereo: isStereo(bi)) }
                 let int = HelixCatalog.isInteger(ex)
-                slots[c.number - 1] = ["@param": "dsp0.block\(bi).\(c.param)",
+                slots[c.number - 1] = ["@param": "\(ref(bi)).\(c.param)",
                                        "@min": int ? Int(lo.rounded()) as Any : lo, "@max": int ? Int(hi.rounded()) as Any : hi]
                 controlNames.append("Knob \(c.number): \(label(bi)) \(c.param) (\(HelixCatalog.short(lo))–\(HelixCatalog.short(hi)))")
             }
@@ -990,21 +1098,21 @@ enum HelixBuilder {
             let gainParams = ["Gain", "Drive", "Fuzz", "Sustain", "Boost"]
             let pick = kept.indices.lazy.compactMap { bi -> (Int, String)? in
                 guard kept[bi].model.id.contains("Dist") else { return nil }
-                let snap = controller["block\(bi)"] as? JSON
+                let snap = controls(bi)
                 guard let p = gainParams.first(where: { kept[bi].model.example[$0] != nil && snap?[$0] == nil }) else { return nil }
                 return (bi, p)
             }.first
             if let (bi, p) = pick {
                 let l = catalog.limits[kept[bi].model.id]?[p]
                 let lo = l?.lo ?? 0, hi = l?.hi ?? 1
-                slots[1] = ["@param": "dsp0.block\(bi).\(p)", "@min": lo, "@max": hi]
+                slots[1] = ["@param": "\(ref(bi)).\(p)", "@min": lo, "@max": hi]
                 controlNames.append("Knob 2: \(label(bi)) \(p) (your drive knob)")
             } else {
                 warnings.append("No drive pedal in this preset, so Knob 2 (your drive knob) does nothing.")
             }
         }
         for (bi, k) in kept.enumerated() where k.model.category.hasPrefix("wah")
-            && !slots.values.contains(where: { ($0["@param"] as? String) == "dsp0.block\(bi).Pedal" }) {
+            && !slots.values.contains(where: { ($0["@param"] as? String) == "\(ref(bi)).Pedal" }) {
             warnings.append("\(label(bi)) has no knob on its Pedal, so it stays parked where it is.")
         }
         if let last = slots.keys.max() {
@@ -1017,40 +1125,61 @@ enum HelixBuilder {
             return ka != kb ? ka : a.localizedStandardCompare(b) == .orderedAscending
         }
 
-        // The split and merge (always present in Helix; at the ends of the chain when path B isn't used).
+        // Each DSP's split and merge (always present in Helix; at the ends of the chain when its path B isn't used).
         let pj = design.paths ?? .init(levelA: 0, panA: 0.5, levelB: 0, panB: 0.5, invertB: false)
         func level(_ x: Double) -> Double { min(max(x, -60), 12) }
         func pan(_ x: Double) -> Double { min(max(x, 0), 1) }
-        dsp0["split"] = ["@enabled": true, "@model": "HD2_AppDSPFlowSplitY", "@position": splitAt,
-                         "BalanceA": 0.5, "BalanceB": 0.5, "bypass": false]
-        dsp0["join"] = ["@enabled": true, "@model": "HD2_AppDSPFlowJoin", "@position": joinAt,
-                        "A Level": laneB.isEmpty ? 0.0 : level(pj.levelA), "A Pan": laneB.isEmpty ? 0.5 : pan(pj.panA),
-                        "B Level": laneB.isEmpty ? 0.0 : level(pj.levelB), "B Pan": laneB.isEmpty ? 0.5 : pan(pj.panB),
-                        "B Polarity": laneB.isEmpty ? false : pj.invertB, "Level": 0.0]
-        tone["dsp0"] = dsp0
-        if !controller.isEmpty { tone["controller"] = ["dsp0": controller] }
+        for d in 0..<2 {
+            let l = dsp[d], split = !l.laneB.isEmpty
+            dsps[d]["split"] = ["@enabled": true, "@model": "HD2_AppDSPFlowSplitY", "@position": split ? l.pre.count : 0,
+                                "BalanceA": 0.5, "BalanceB": 0.5, "bypass": false]
+            dsps[d]["join"] = ["@enabled": true, "@model": "HD2_AppDSPFlowJoin", "@position": l.joinAt,
+                               "A Level": split ? level(pj.levelA) : 0.0, "A Pan": split ? pan(pj.panA) : 0.5,
+                               "B Level": split ? level(pj.levelB) : 0.0, "B Pan": split ? pan(pj.panB) : 0.5,
+                               "B Polarity": split ? pj.invertB : false, "Level": 0.0]
+        }
+        // Routing: DSP 1's path A feeds DSP 2 when both are used; the last one goes to the main output, at the
+        // player's preset output level.
+        func output(_ d: Int, to out: Int, gain: Double) {
+            var o = dsps[d]["outputA"] as? JSON ?? ["@model": "HD2_AppDSPFlowOutput", "pan": 0.5]
+            o["@output"] = out
+            o["gain"] = gain
+            dsps[d]["outputA"] = o
+        }
+        let gain = Swift.min(Swift.max(outputLevel, -20), 20)
+        output(0, to: chained ? 2 : 1, gain: chained ? 0 : gain)
+        output(1, to: 1, gain: chained ? gain : 0)
+        if chained, var input = dsps[1]["inputA"] as? JSON {
+            input["@input"] = 0            // fed by DSP 1 (as Helix Native writes it)
+            dsps[1]["inputA"] = input
+        }
+        tone["dsp0"] = dsps[0]
+        tone["dsp1"] = dsps[1]
+        let controllerJSON = Dictionary(uniqueKeysWithValues: (0..<2).filter { !controller[$0].isEmpty }
+            .map { ("dsp\($0)", controller[$0] as Any) })
+        tone["controller"] = controllerJSON.isEmpty ? nil : controllerJSON
 
         // Snapshots 1–8 (unused ones are copies of the first, marked not valid).
         var names: [String] = []
         for si in 0..<8 {
             let s = si < snaps.count ? snaps[si] : snaps[0]
-            var blocks: JSON = [:]
+            var blocks: [JSON] = [["split": true], ["split": true]]     // Helix Native saves each split's on/off
             for (bi, k) in kept.enumerated() {
-                blocks["block\(bi)"] = s.enabled.indices.contains(k.index) ? s.enabled[k.index] : true
+                blocks[place[bi].dsp][blockKey(bi)] = s.enabled.indices.contains(k.index) ? s.enabled[k.index] : true
             }
-            blocks["split"] = true          // Helix Native saves the split's on/off in every snapshot
-            var ctl: JSON = [:]
+            var ctl: [JSON] = [[:], [:]]
             for (bi, params) in controlled {
                 var b: JSON = [:]
                 for (p, values) in params { b[p] = ["@fs_enabled": false, "@value": values[si < snaps.count ? si : 0]] }
-                ctl["block\(bi)"] = b
+                ctl[place[bi].dsp][blockKey(bi)] = b
             }
             let name = si < snaps.count ? clean(s.name, max: 10) : "SNAPSHOT \(si + 1)"
             if si < snaps.count { names.append(name) }
             var snap: JSON = ["@name": name, "@custom_name": si < snaps.count, "@valid": si < snaps.count,
                               "@ledcolor": 0, "@pedalstate": 2, "@tempo": s.tempo ?? 120.0,
-                              "blocks": ["dsp0": blocks]]
-            if !ctl.isEmpty { snap["controllers"] = ["dsp0": ctl] }
+                              "blocks": ["dsp0": blocks[0], "dsp1": blocks[1]]]
+            let ctlJSON = Dictionary(uniqueKeysWithValues: (0..<2).filter { !ctl[$0].isEmpty }.map { ("dsp\($0)", ctl[$0] as Any) })
+            if !ctlJSON.isEmpty { snap["controllers"] = ctlJSON }
             tone["snapshot\(si)"] = snap
         }
         if var global = tone["global"] as? JSON {
@@ -1058,7 +1187,8 @@ enum HelixBuilder {
             global["@cursor_dsp"] = 0
             global["@cursor_group"] = "block0"
             global["@tempo"] = snaps[0].tempo ?? 120.0
-            global["@topology0"] = laneB.isEmpty ? "A" : "SABJ"
+            global["@topology0"] = dsp[0].laneB.isEmpty ? "A" : "SABJ"
+            global["@topology1"] = dsp[1].laneB.isEmpty ? "A" : "SABJ"
             tone["global"] = global
         }
         data["tone"] = tone
@@ -1105,8 +1235,15 @@ enum HelixBuilder {
     }
 
     /// Writes the preset into the library's Helix folder; returns the file.
-    static func save(_ preset: JSON, name: String, in folder: URL) throws -> URL {
+    /// With `replacing`, writes over that file (a new version of a preset that has a history).
+    static func save(_ preset: JSON, name: String, in folder: URL, replacing: String? = nil) throws -> URL {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        if let replacing {
+            let url = folder.appendingPathComponent(replacing)
+            let d = try JSONSerialization.data(withJSONObject: preset, options: [.prettyPrinted, .sortedKeys])
+            try d.write(to: url, options: .atomic)
+            return url
+        }
         var url = folder.appendingPathComponent(clean(name, max: 40) + ".hlx")
         var n = 2
         while FileManager.default.fileExists(atPath: url.path) {

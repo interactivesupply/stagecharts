@@ -14,6 +14,9 @@ struct HelixSettingsSection: View {
     @AppStorage("helixKnobs") private var knobs = 3
     @AppStorage("helixSwitches") private var switches = 4
     @AppStorage("helixGuitarBlock") private var guitarBlock = true
+    @AppStorage("helixEvenLevels") private var evenLevels = true
+    @AppStorage("helixOutputLevel") private var outputLevel = 0.0
+    @AppStorage("helixTwoDSP") private var twoDSP = true
     @ObservedObject private var guitars = GuitarStore.shared
     @EnvironmentObject var midi: MIDIController
     @State private var editingGuitar: MyGuitar?
@@ -23,6 +26,8 @@ struct HelixSettingsSection: View {
     @State private var error: String?
     @State private var pickingFolder = false
     @State private var designing = false
+    @State private var savedPresets: [HelixHistory] = []
+    @State private var opening: HelixFileRef?
     private static let bookmarkKey = "helixPresetsBookmark"
 
     var body: some View {
@@ -48,10 +53,21 @@ struct HelixSettingsSection: View {
 
             Section {
                 Button("Make a preset from a description…", systemImage: "sparkles") { designing = true }
+                ForEach(savedPresets, id: \.file) { h in
+                    Button {
+                        opening = HelixFileRef(id: h.file)
+                    } label: {
+                        LabeledContent {
+                            Text("\(h.revisions.count) version\(h.revisions.count == 1 ? "" : "s")")
+                        } label: {
+                            Label(HelixBuilder.clean(h.current?.design.name ?? h.file, max: 16), systemImage: "slider.horizontal.3")
+                        }
+                    }
+                }
                 Button("Ableton setup guide…", systemImage: "book") { showingAbletonGuide = true }
                     .disabled(catalog == nil)
             } footer: {
-                Text("For a whole set, use the set's menu: Helix preset for this set…")
+                Text("For a whole set, use the set's menu: Helix preset for this set…  Saved presets are listed here: open one to change it with Claude, bring in your Helix Native edits, or go back to an earlier version.")
             }
 
             Section {
@@ -63,6 +79,17 @@ struct HelixSettingsSection: View {
                 Text("Live controls")
             } footer: {
                 Text("Helix Native's automation Knobs and Switches that your MIDI controller reaches (in Ableton, MIDI-map them on the Helix Native device). Each preset assigns them: Knob 1 to your volume pedal, the other knobs to settings worth riding, and the switches to effects worth turning on and off. The preset shows which is which.")
+            }
+
+            Section {
+                Toggle("Even out levels", isOn: $evenLevels)
+                Stepper("Preset output level: \(outputLevel > 0 ? "+" : "")\(outputLevel.formatted(.number.precision(.fractionLength(1)))) dB",
+                        value: $outputLevel, in: -12...12, step: 0.5)
+                Toggle("Use both DSPs (pedals on DSP 1, amps on DSP 2)", isOn: $twoDSP)
+            } header: {
+                Text("Levels and layout")
+            } footer: {
+                Text("Even out levels brings each amp's channel volume up so its loudest snapshot sits at 0.85 (quieter snapshots stay proportionally quieter; Master is left alone) and puts cabs at +2.5 dB, like hand-built presets. The output level is the preset's main output gain: nudge it until new presets match one of yours. Both apply to presets made from now on.")
             }
 
             MC8Section()
@@ -125,8 +152,12 @@ struct HelixSettingsSection: View {
         .fileImporter(isPresented: $pickingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result { use(url) }
         }
-        .sheet(isPresented: $designing) { HelixPresetView(setID: nil) }
+        .sheet(isPresented: $designing, onDismiss: loadSavedPresets) { HelixPresetView(setID: nil) }
+        .sheet(item: $opening, onDismiss: loadSavedPresets) { HelixPresetView(setID: nil, file: $0.id) }
+        .task { loadSavedPresets() }
     }
+
+    private func loadSavedPresets() { savedPresets = HelixHistory.all(in: library.helixFolder) }
 
     private func chooseFolder() {
         #if os(macOS)
@@ -181,9 +212,14 @@ struct HelixSettingsSection: View {
 
 // MARK: - Designing a preset
 
+/// A saved preset file, for opening its history in a sheet.
+struct HelixFileRef: Identifiable { var id: String }
+
 @available(iOS 18, macOS 14, *)
 struct HelixPresetView: View {
     let setID: UUID?
+    /// A saved preset to open (its history), when not opened from a set.
+    var file: String? = nil
     @EnvironmentObject var library: SongLibrary
     @Environment(\.dismiss) private var dismiss
     @AppStorage("helixLastDescription") private var request = "A big crunchy tone with a dotted-eighth delay and a boost for leads"
@@ -198,6 +234,13 @@ struct HelixPresetView: View {
     @AppStorage("helixEffort") private var effort = "high"
     @State private var stage = ""
     @State private var research: String?
+    /// The preset's versions, once it has been saved (or when opening one that has a history).
+    @State private var history: HelixHistory?
+    @State private var change = ""
+    @State private var pendingKind: HelixHistory.Revision.Kind = .design
+    @State private var pendingRequest = ""
+    @State private var importing = false
+    @State private var importNotes: [String] = []
 
     private static let efforts: [(String, String)] = [
         ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra high"), ("max", "Max"),
@@ -215,10 +258,11 @@ struct HelixPresetView: View {
                               systemImage: "exclamationmark.triangle")
                     }
                 }
+                if let history { historySections(history) }
                 Section {
                     TextEditor(text: $request).frame(minHeight: 90)
                 } header: {
-                    Text("Describe the tones")
+                    Text(history == nil ? "Describe the tones" : "Or start over: describe the tones")
                 } footer: {
                     Text("E.g. \"big crunchy tone with a dotted-eighth delay and a boost\", \"ambient swells for the slow songs\", \"match the electric guitar on Gratitude by Brandon Lake\".")
                 }
@@ -266,7 +310,8 @@ struct HelixPresetView: View {
                         Task { await run() }
                     } label: {
                         if working { HStack { ProgressView(); Text(stage) } }
-                        else { Label(built == nil ? "Design preset" : "Design again", systemImage: "sparkles") }
+                        else { Label(history != nil ? "Design a new version from scratch" : built == nil ? "Design preset" : "Design again",
+                                     systemImage: "sparkles") }
                     }
                     .disabled(working || catalog == nil || request.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     if let error { Text(error).foregroundStyle(.red).font(.callout) }
@@ -277,6 +322,10 @@ struct HelixPresetView: View {
                 if let design, let built { result(design, built) }
             }
             .formStyle(.grouped)
+            .task { loadHistory() }
+            .fileImporter(isPresented: $importing, allowedContentTypes: [.json, .data]) { r in
+                if case .success(let url) = r { importEdits(from: url) }
+            }
             #if DEBUG
             .task { if ProcessInfo.processInfo.arguments.contains("-mockHelix") { await run() } }
             #endif
@@ -332,8 +381,8 @@ struct HelixPresetView: View {
                 Text("Already assigned in the preset: your controller's knobs and switches work as soon as it loads.")
             }
         }
-        if !b.warnings.isEmpty {
-            Section("Notes") { ForEach(b.warnings, id: \.self) { Text($0).font(.caption) } }
+        if !b.warnings.isEmpty || !importNotes.isEmpty {
+            Section("Notes") { ForEach(importNotes + b.warnings, id: \.self) { Text($0).font(.caption) } }
         }
         Section {
             if let saved {
@@ -343,7 +392,9 @@ struct HelixPresetView: View {
                 #endif
                 ShareLink(item: saved) { Label("Share or save the .hlx…", systemImage: "square.and.arrow.up") }
             } else {
-                Button(set == nil ? "Save preset" : "Save preset and use it for this set", systemImage: "square.and.arrow.down") { save(d, b) }
+                Button(history.map { "Save as version \($0.revisions.count + 1)" }
+                       ?? (set == nil ? "Save preset" : "Save preset and use it for this set"),
+                       systemImage: "square.and.arrow.down") { save(d, b) }
                     .buttonStyle(.borderedProminent)
             }
         } footer: {
@@ -411,6 +462,155 @@ struct HelixPresetView: View {
             built = try HelixBuilder.build(d, catalog: catalog, songCount: s.count, volumePedal: pedal,
                                            knobs: knobs, switches: switches, guitarBlock: guitarBlock)
             design = d
+            pendingKind = .design; pendingRequest = request; importNotes = []
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    // MARK: History
+
+    @ViewBuilder private func historySections(_ h: HelixHistory) -> some View {
+        Section {
+            if let cur = h.current {
+                LabeledContent(HelixBuilder.clean(cur.design.name, max: 16),
+                               value: "version \(h.revisions.count) · \(cur.date.formatted(date: .abbreviated, time: .shortened))")
+            }
+            TextEditor(text: $change).frame(minHeight: 70)
+            Button {
+                Task { await makeChange() }
+            } label: {
+                if working { HStack { ProgressView(); Text(stage) } }
+                else { Label("Make this change", systemImage: "wand.and.stars") }
+            }
+            .disabled(working || catalog == nil || change.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if h.changedOutside(in: library.helixFolder) {
+                Label("\(h.file) changed after StageCharts saved it.", systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                Button("Read my edits from it", systemImage: "arrow.down.doc") {
+                    importEdits(from: library.helixFolder.appendingPathComponent(h.file))
+                }
+            }
+            Button("Import edits from a preset exported from Helix Native…", systemImage: "square.and.arrow.down.on.square") {
+                importing = true
+            }
+        } header: {
+            Text("Change this preset")
+        } footer: {
+            Text("E.g. \"less gain in the verse snapshot\", \"swap the plate for a shimmer\", \"put a tremolo on Switch 4\". "
+                 + "Claude changes only that and keeps the rest. If you've tweaked the preset in Helix Native, export it "
+                 + "and import it here first, so the change builds on your edits.")
+        }
+        Section {
+            ForEach(Array(h.revisions.enumerated().reversed()), id: \.element.id) { i, r in
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("\(i + 1). \(Self.kindName(r.kind))").font(.callout.weight(.semibold))
+                        Spacer()
+                        Text(r.date.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(r.request).font(.callout).lineLimit(3)
+                    if let line = r.settings { Text(line).font(.caption2).foregroundStyle(.secondary) }
+                    if i < h.revisions.count - 1 {
+                        Button("Go back to this version") { restore(r, number: i + 1) }.font(.caption).disabled(working)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        } header: {
+            Text("Versions")
+        } footer: {
+            Text("Each saved version keeps its request and Claude's design, in \(HelixHistory.url(for: h.file, in: library.helixFolder).lastPathComponent) next to the preset.")
+        }
+    }
+
+    private static func kindName(_ k: HelixHistory.Revision.Kind) -> String {
+        switch k {
+        case .design: return "Designed"
+        case .change: return "Changed"
+        case .imported: return "Your Helix Native edits"
+        case .restored: return "Went back"
+        }
+    }
+
+    private func rebuild(_ d: HelixDesign) throws -> HelixBuilder.Result {
+        guard let catalog else { throw HelixError.bad("Choose your Helix presets folder in Settings → Helix first.") }
+        let (pedal, knobs, switches) = Self.liveControls
+        return try HelixBuilder.build(d, catalog: catalog, songCount: songs.count, volumePedal: pedal,
+                                      knobs: knobs, switches: switches, guitarBlock: Self.guitarSetup.0)
+    }
+
+    private func loadHistory() {
+        guard history == nil, let f = file ?? set?.helixPreset,
+              let h = HelixHistory.load(file: f, in: library.helixFolder), let cur = h.current else { return }
+        history = h
+        design = cur.design
+        research = cur.research
+        if !h.description.isEmpty { request = h.description }
+        for (k, v) in cur.songNotes ?? [:] { if let id = UUID(uuidString: k) { notes[id] = v } }
+        built = try? rebuild(cur.design)
+        saved = library.helixFolder.appendingPathComponent(h.file)
+    }
+
+    private func makeChange() async {
+        guard let catalog, let h = history, let base = design ?? h.current?.design else { return }
+        let ask = change.trimmingCharacters(in: .whitespacesAndNewlines)
+        working = true; error = nil
+        defer { working = false }
+        do {
+            var log = h.requestLog
+            if saved == nil, !pendingRequest.isEmpty { log.append("Not saved yet: \(pendingRequest)") }
+            stage = "Making the change… (about a minute)"
+            let (pedal, knobs, switches) = Self.liveControls
+            let (guitarBlock, guitarLines) = Self.guitarSetup
+            let d = try await HelixDesigner.design(description: h.description, songs: songs, catalog: catalog,
+                                                   volumePedal: pedal, knobs: knobs, switches: switches, research: research,
+                                                   model: model, effort: effort, guitarBlock: guitarBlock, guitars: guitarLines,
+                                                   revision: .init(current: base, history: log, change: ask))
+            built = try rebuild(d)
+            design = d
+            pendingRequest = (saved == nil && pendingKind == .change && !pendingRequest.isEmpty)
+                ? pendingRequest + "; then " + ask : ask
+            pendingKind = .change
+            importNotes = []
+            saved = nil
+            change = ""
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func restore(_ r: HelixHistory.Revision, number: Int) {
+        do {
+            built = try rebuild(r.design)
+            design = r.design
+            research = r.research
+            pendingKind = .restored
+            pendingRequest = "Went back to version \(number) (\(r.date.formatted(date: .abbreviated, time: .omitted))): \(r.request)"
+            importNotes = []
+            saved = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func importEdits(from url: URL) {
+        guard let catalog else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url),
+              let preset = try? JSONSerialization.jsonObject(with: data) as? JSON,
+              let r = HelixImport.design(from: preset, catalog: catalog, previous: design ?? history?.current?.design) else {
+            error = "Couldn't read a Helix preset from \(url.lastPathComponent)."; return
+        }
+        do {
+            built = try rebuild(r.design)
+            design = r.design
+            importNotes = r.notes + ["Read your edits from \(url.lastPathComponent). Save them as a version before making more changes."]
+            pendingKind = .imported
+            pendingRequest = "Your edits from Helix Native (\(url.lastPathComponent))"
+            saved = nil
+            error = nil
         } catch {
             self.error = error.localizedDescription
         }
@@ -418,8 +618,20 @@ struct HelixPresetView: View {
 
     private func save(_ d: HelixDesign, _ b: HelixBuilder.Result) {
         do {
-            let url = try HelixBuilder.save(b.preset, name: d.name, in: library.helixFolder)
+            let url = try HelixBuilder.save(b.preset, name: d.name, in: library.helixFolder, replacing: history?.file)
             saved = url
+            var h = history ?? HelixHistory(file: url.lastPathComponent)
+            let (pedal, knobs, switches) = Self.liveControls
+            let ai = pendingKind == .design || pendingKind == .change
+            h.revisions.append(.init(kind: pendingKind, request: pendingRequest.isEmpty ? request : pendingRequest, design: d,
+                                     research: research, model: ai ? model : nil, effort: ai ? effort : nil,
+                                     songNotes: Dictionary(uniqueKeysWithValues: notes.filter { !$0.value.isEmpty }
+                                        .map { ($0.key.uuidString, $0.value) }),
+                                     settings: HelixHistory.settingsLine(volumePedal: pedal, knobs: knobs, switches: switches,
+                                                                         guitarBlock: Self.guitarSetup.0)))
+            try h.save(in: library.helixFolder)
+            history = h
+            pendingRequest = ""; importNotes = []
             if let set {
                 library.updateSet(set.id) { s in
                     s.helixPreset = url.lastPathComponent

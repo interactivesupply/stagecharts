@@ -27,6 +27,7 @@
 		4FED3463389CD5C9545A839D /* ChordProKit in Frameworks */ = {isa = PBXBuildFile; productRef = C176A684DB57B53C84E15EA8 /* ChordProKit */; };
 		54D3C50C60282C55AC042EDF /* I'm So Blessed-chords-D.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 9DD48E38F5779A4CEB59D3CB /* I'm So Blessed-chords-D.pdf */; };
 		5A8DB10D6790B0630E697853 /* MIDIRouteMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAC8109AF3F38CCE238F1A25 /* MIDIRouteMap.swift */; };
+		5BB8B5A83BC54C474D3950F7 /* HelixHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 848C1F223AC098EBA0FBA387 /* HelixHistory.swift */; };
 		61439E4ACA0CF81350248FF7 /* ChordDiagram.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41BB546B7D9658C33A57F9DB /* ChordDiagram.swift */; };
 		61C92D363343F333FB54D900 /* Guitars.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A60633CCE04B60462937752 /* Guitars.swift */; };
 		67862352AB7F214372D0D397 /* PlaybackSyncView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAACFE9F57E93F1F9E143B57 /* PlaybackSyncView.swift */; };
@@ -97,6 +98,7 @@
 		7240A0591BF363D3AB174FED /* AIAssistant.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIAssistant.swift; sourceTree = "<group>"; };
 		79304C82310916CD77B2D8AA /* Build My Life-chords-G.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "Build My Life-chords-G.pdf"; sourceTree = "<group>"; };
 		819548E19474BA1CE0510CBE /* MIDIClock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIClock.swift; sourceTree = "<group>"; };
+		848C1F223AC098EBA0FBA387 /* HelixHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelixHistory.swift; sourceTree = "<group>"; };
 		85DF11484BEEE6BFEB620B20 /* Viewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Viewer.swift; sourceTree = "<group>"; };
 		8A468E4AEE93F9977B5A332E /* SongView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SongView.swift; sourceTree = "<group>"; };
 		9DD48E38F5779A4CEB59D3CB /* I'm So Blessed-chords-D.pdf */ = {isa = PBXFileReference; lastKnownFileType = image.pdf; path = "I'm So Blessed-chords-D.pdf"; sourceTree = "<group>"; };
@@ -207,6 +209,7 @@
 				F610E83180951504B6804CAF /* GoogleDriveSync.swift */,
 				1A60633CCE04B60462937752 /* Guitars.swift */,
 				5DA99902CD7D40BE180FA742 /* Helix.swift */,
+				848C1F223AC098EBA0FBA387 /* HelixHistory.swift */,
 				AA4DBFF941F031E7FCD6B8CD /* HelixViews.swift */,
 				B310C466F38F77069111DFE3 /* Info.plist */,
 				06C7608B97160325CB244EA2 /* LinkSession.swift */,
@@ -371,6 +374,7 @@
 				2EF3C70C5C943BC762437527 /* GoogleDriveSync.swift in Sources */,
 				61C92D363343F333FB54D900 /* Guitars.swift in Sources */,
 				91E4FEA2B78FC52C09672767 /* Helix.swift in Sources */,
+				5BB8B5A83BC54C474D3950F7 /* HelixHistory.swift in Sources */,
 				7D8A8F3B37A602DD049AF85F /* HelixViews.swift in Sources */,
 				8C83911A7714DB62CD44AEA4 /* LinkSession.swift in Sources */,
 				9E10E39F98D2A44B25D762DC /* MIDIClock.swift in Sources */,
