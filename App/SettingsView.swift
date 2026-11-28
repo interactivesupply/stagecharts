@@ -31,7 +31,7 @@ struct SettingsView: View {
     // MARK: Categories
 
     enum Category: String, CaseIterable, Identifiable, Hashable {
-        case display, band, library, songs, helix, connections, control, tempo, monitor
+        case display, band, library, songs, helix, connections, control, tempo, monitor, map
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -44,6 +44,7 @@ struct SettingsView: View {
             case .control: return "MIDI control"
             case .tempo: return "Tempo sync"
             case .monitor: return "MIDI monitor"
+            case .map: return "MIDI map"
             }
         }
         var icon: String {
@@ -57,6 +58,7 @@ struct SettingsView: View {
             case .control: return "pianokeys"
             case .tempo: return "metronome.fill"
             case .monitor: return "waveform.path.ecg"
+            case .map: return "tablecells"
             }
         }
         var color: Color {
@@ -70,6 +72,7 @@ struct SettingsView: View {
             case .control: return .pink
             case .tempo: return .red
             case .monitor: return .teal
+            case .map: return .cyan
             }
         }
         /// Extra words the search matches.
@@ -84,17 +87,24 @@ struct SettingsView: View {
             case .control: return "channel actions learn next previous page scroll song numbers program change set slots two-way send"
             case .tempo: return "midi clock send receive pass through ableton link bpm start stop"
             case .monitor: return "log messages debug routing map activity routes sent received"
+            case .map: return "rig reference document mappings ableton playback mc8 morningstar channels cc chart"
             }
         }
         var section: String {
             switch self {
             case .display, .band, .library, .songs, .helix: return "StageCharts"
-            case .connections, .control, .tempo, .monitor: return "MIDI"
+            case .connections, .control, .tempo, .monitor, .map: return "MIDI"
             }
         }
     }
 
-    @State private var category: Category?
+    @State private var category: Category? = {
+        #if DEBUG
+        let a = ProcessInfo.processInfo.arguments       // testing: -settingsCategory map
+        if let i = a.firstIndex(of: "-settingsCategory"), i + 1 < a.count { return Category(rawValue: a[i + 1]) }
+        #endif
+        return nil
+    }()
     @State private var search = ""
     private var visibleCategories: [Category] {
         let q = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -227,6 +237,8 @@ struct SettingsView: View {
             case .monitor:
                 MIDIRoutingMonitor(midi: midi)
                 monitorSection
+            case .map:
+                MIDIMapPage(midi: midi)
             }
         }
         .formStyle(.grouped)

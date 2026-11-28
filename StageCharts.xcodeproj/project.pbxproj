@@ -47,6 +47,7 @@
 		99459916D318ACB44D7E4D47 /* PageTurn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1DCCB6F35B8956361516AF /* PageTurn.swift */; };
 		9E10E39F98D2A44B25D762DC /* MIDIClock.swift in Sources */ = {isa = PBXBuildFile; fileRef = 819548E19474BA1CE0510CBE /* MIDIClock.swift */; };
 		A3229691406201F0D6245FD4 /* Cornerstone-chords-C.pdf in Resources */ = {isa = PBXBuildFile; fileRef = 3955B0F5E1067CE8CCC3311C /* Cornerstone-chords-C.pdf */; };
+		A56FAEF1BE456D1C5BB3A70B /* MIDIMapPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED68B31FB7E29E0616F9335A /* MIDIMapPage.swift */; };
 		AAC37DBF3FB2D844CC262D98 /* CCLIReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FC899D2D34CC1FB2328FC83 /* CCLIReport.swift */; };
 		AFAFE8471767F73ACB5F5E83 /* OnSongImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55FBD50C2C4893DEB5077DD6 /* OnSongImporter.swift */; };
 		B15C6345E582646960E1826C /* SongView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A468E4AEE93F9977B5A332E /* SongView.swift */; };
@@ -117,6 +118,7 @@
 		DC4438900E261297DD1A442D /* BluetoothMIDI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BluetoothMIDI.swift; sourceTree = "<group>"; };
 		EAACFE9F57E93F1F9E143B57 /* PlaybackSyncView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSyncView.swift; sourceTree = "<group>"; };
 		EAC8109AF3F38CCE238F1A25 /* MIDIRouteMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIRouteMap.swift; sourceTree = "<group>"; };
+		ED68B31FB7E29E0616F9335A /* MIDIMapPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIMapPage.swift; sourceTree = "<group>"; };
 		F1A5BA7E448D4DA7AF76F21D /* PDFSongs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PDFSongs.swift; sourceTree = "<group>"; };
 		F61072584D1025027F4B4F1E /* MIDIRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIRouter.swift; sourceTree = "<group>"; };
 		F610E83180951504B6804CAF /* GoogleDriveSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleDriveSync.swift; sourceTree = "<group>"; };
@@ -215,6 +217,7 @@
 				06C7608B97160325CB244EA2 /* LinkSession.swift */,
 				819548E19474BA1CE0510CBE /* MIDIClock.swift */,
 				612802D3AC5B7FD50E44A145 /* MIDIController.swift */,
+				ED68B31FB7E29E0616F9335A /* MIDIMapPage.swift */,
 				EAC8109AF3F38CCE238F1A25 /* MIDIRouteMap.swift */,
 				F61072584D1025027F4B4F1E /* MIDIRouter.swift */,
 				5DB01670C4333333D24C56D9 /* MorningstarMC8.swift */,
@@ -379,6 +382,7 @@
 				8C83911A7714DB62CD44AEA4 /* LinkSession.swift in Sources */,
 				9E10E39F98D2A44B25D762DC /* MIDIClock.swift in Sources */,
 				B1AF04A2A02CC3C57A1CB5D5 /* MIDIController.swift in Sources */,
+				A56FAEF1BE456D1C5BB3A70B /* MIDIMapPage.swift in Sources */,
 				5A8DB10D6790B0630E697853 /* MIDIRouteMap.swift in Sources */,
 				9568F080B46CC2BBB7C9EA0A /* MIDIRouter.swift in Sources */,
 				CDA0D06F1F8495B7BC77C50F /* MorningstarMC8.swift in Sources */,

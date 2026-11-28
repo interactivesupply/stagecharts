@@ -330,7 +330,7 @@ final class GoogleDriveSync: ObservableObject {
 
             // Remote listing by relative path.
             var remote: [String: DriveFile] = [:]
-            for f in try await api.list(in: root) where ["song-settings.json", "setlists.json"].contains(f.name) { remote[f.name] = f }
+            for f in try await api.list(in: root) where ["song-settings.json", "setlists.json", RigMIDIMap.fileName].contains(f.name) { remote[f.name] = f }
             for f in try await api.list(in: songsDir) where f.md5Checksum != nil { remote["Songs/" + f.name] = f }
             for f in try await api.list(in: pdfDir) where f.md5Checksum != nil { remote["Songs/PDF/" + f.name] = f }
             for f in try await api.list(in: inkDir) where f.md5Checksum != nil { remote["Ink/" + f.name] = f }
@@ -339,7 +339,7 @@ final class GoogleDriveSync: ObservableObject {
             // Local listing by relative path.
             let fm = FileManager.default
             var local: [String: URL] = [:]
-            for name in ["song-settings.json", "setlists.json"] {
+            for name in ["song-settings.json", "setlists.json", RigMIDIMap.fileName] {
                 let u = library.base.appendingPathComponent(name)
                 if fm.fileExists(atPath: u.path) { local[name] = u }
             }
